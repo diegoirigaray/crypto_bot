@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import mplfinance as fplt
+import plotly.graph_objects as go
 from torch.utils.data import Dataset, WeightedRandomSampler
 
 
@@ -12,10 +13,22 @@ PLOT_PARAMS = {
 }
 
 
-def plot_df(df):
+def plot_df_simlpe(df):
     df_plot = df.copy()
     df_plot.set_index('Date', inplace=True, drop=True)
     fplt.plot(df_plot, **PLOT_PARAMS)
+
+
+def plot_df_interactive(df):
+    fig = go.Figure(data=[go.Candlestick(
+        x=df['Date'],
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'])])
+    fig.update_layout(xaxis_rangeslider_visible=False)
+    # fig.show()
+    return fig
 
 
 def plot_by_date(df, min_date, max_date):

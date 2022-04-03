@@ -82,9 +82,9 @@ def convert_to_date_object(d):
   return date_obj
 
 def get_path(trading_type, market_data_type, time_period, symbol, interval=None):
-  trading_type_path = 'data/spot'
+  trading_type_path = '/spot'
   if trading_type != 'spot':
-    trading_type_path = f'data/futures/{trading_type}'
+    trading_type_path = f'/futures/{trading_type}'
   if interval is not None:
     path = f'{trading_type_path}/{time_period}/{market_data_type}/{symbol.upper()}/{interval}/'
   else:
@@ -136,7 +136,7 @@ def download_data(folder, type='spot', symbols=['BTCUSDT'], intervals=['1m'], ye
     download_monthly_klines(type, symbols, num_symbols, intervals, years, months, startDate, endDate, folder, checksum)
 
 
-def load_dataframe(folder1, start_date, end_date, type='spot', symbol='BTCUSDT', interval='1m'):
+def load_dataframe(folder, start_date, end_date, type='spot', symbol='BTCUSDT', interval='1m'):
   cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume', 'close_date', 'quote_asset_volume', 'number_of_trades',	'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume',	'ignore']
   path = '{}/data/{}/monthly/klines/{}/{}/'.format(folder, type, symbol, interval)
 
