@@ -1,5 +1,9 @@
 import torch
 import pandas as pd
+import numpy as np
+from pandas.core.indexers.objects import BaseIndexer, FixedForwardWindowIndexer
+from datetime import datetime
+from sklearn.impute import SimpleImputer
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.pipeline import Pipeline
 from talib.abstract import Function
@@ -11,6 +15,19 @@ class BaseTransform(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         return X
+
+
+class PrintTransform(BaseTransform):
+    def __init__(self, text):
+        self.text = text
+
+    def fit(self, X, y=None):
+        print('{} Fit -> {}'.format(datetime.now().strftime("%H:%M:%S"), self.text))
+        return super().fit(X, y)
+    
+    def transform(self, X):
+        print('{} Transform -> {}'.format(datetime.now().strftime("%H:%M:%S"), self.text))
+        return super().transform(X)
 
 
 class BaseCandlestickTransform(BaseTransform):
@@ -44,6 +61,25 @@ class RelativeTransform(BaseTransform):
         ref_factor = 100 / ref_value
         
         X[self.target_cols] = (X[self.target_cols] * ref_factor) - 100
+        return X
+
+
+class Normalizer(BaseTransform):
+    def __init__(self, features, exclude=[]):
+        self.features = features
+        self.exclude = exclude
+        self.data = {}
+    
+    def fit(self, X, y=None):
+        features = X.columns.tolist() if self.features == 'all' else self.features
+        features = [f for f in features if f not in self.exclude]
+        for f in features:
+            self.data[f] = {'mean': X[f].mean(), 'std': X[f].std()}
+        return self
+    
+    def transform(self, X):
+        for f, data in self.data.items():
+            X[f] = (X[f] - data['mean']) / data['std']
         return X
 
 
@@ -149,22 +185,14 @@ class GoldenDeathCrossTransform(BaseCandlestickTransform):
         self.base_name = '_{}_{}'.format(col_a, col_b)
     
     def transform(self, X):
-        gold = {'index': [], 'data': []}
-        death = {'index': [], 'data': []}
-
-        for i in range(1, len(X)):
-            r1 = X.iloc[i - 1]
-            r2 = X.iloc[i]
-
-            if (r1[self.col_a] < r1[self.col_b] and r2[self.col_a] > r2[self.col_b]):
-                gold['index'].append(i)
-                gold['data'].append(r2[self.col_a])
-            elif (r1[self.col_a] > r1[self.col_b] and r2[self.col_a] < r2[self.col_b]):
-                death['index'].append(i)
-                death['data'].append(r2[self.col_a])
-
-        X['golden' + self.base_name] = pd.Series(**gold)
-        X['death' + self.base_name] = pd.Series(**death)
+        diff = X[self.col_a] - X[self.col_b]
+        shifted = diff.shift(1, fill_value=0)
+        
+        gold = ((shifted < 0) & (diff > 0))
+        death = ((shifted > 0) & (diff < 0))
+        
+        X.loc[gold, 'golden' + self.base_name] = X[self.col_a]
+        X.loc[death, 'death' + self.base_name] = X[self.col_a]
         return X
 
 
@@ -180,21 +208,9 @@ class LocalMinMaxBaseTransform(BaseCandlestickTransform):
         self.result_name = 'local{}{}'.format(self.FUNC, radius)
     
     def transform(self, X):
-        i = self.radius
-        result = {'index': [], 'data': []}
-        prices = X[self.CLOSE]
-        
-        while i < (len(X) - self.radius):
-            curr = prices.iloc[i]
-            limit = getattr(prices.iloc[(i - self.radius):(i + self.radius + 1)], self.FUNC)()
-            
-            if curr == limit:
-                result['index'].append(i)
-                result['data'].append(curr)
-            
-            i += 1 if (curr != limit) else (self.radius + 1)
-        
-        X[self.result_name] = pd.Series(**result)
+        limit = getattr(X[self.CLOSE].rolling(window=self.radius * 2, min_periods=0, center=True), self.FUNC)()
+        cond = limit == X[self.CLOSE]
+        X.loc[cond, self.result_name] = X[self.CLOSE]
         return X
 
 
@@ -204,6 +220,33 @@ class LocalMinTransform(LocalMinMaxBaseTransform):
 
 class LocalMaxTransform(LocalMinMaxBaseTransform):
     FUNC = 'max'
+
+
+class FixedLastDropedWindowIndexer(BaseIndexer):
+    def __init__(self, index_array=None, window_size=0, drop_last=0):
+        self.index_array = index_array
+        self.window_size = window_size
+        self.drop_last = drop_last
+
+    def get_window_bounds(self, num_values=0, min_periods=None, center=None, closed=None):
+        if center:
+            offset = (self.window_size - 1) // 2
+        else:
+            offset = 0
+
+        end = np.arange(1 + offset, num_values + 1 + offset, dtype="int64")
+        start = end - self.window_size
+        if self.drop_last:
+            end -= self.drop_last
+        if closed in ["left", "both"]:
+            start -= 1
+        if closed in ["left", "neither"]:
+            end -= 1
+
+        end = np.clip(end, 0, num_values)
+        start = np.clip(start, 0, num_values)
+
+        return start, end
 
 
 class MovingWindowBaseTransform(BaseCandlestickTransform):
@@ -217,35 +260,37 @@ class MovingWindowBaseTransform(BaseCandlestickTransform):
     *drop_last is usefull for cases when the last n elements of the window
     arent expected to be available in execution time.
     '''
-    def __init__(self, steps, values_col, result_name, drop_last=0, run_incomplete=False):
+    def __init__(self, steps, values_col, result_name, drop_last=0):
         self.steps = sorted(steps if isinstance(steps, list) else [steps])
         self.values_col = values_col
         self.result_name = result_name
         self.drop_last = drop_last
-        self.run_incomplete = run_incomplete
-    
-    def _get_objective(self, subset):
-        pass
-    
+
     def _get_result_name(self, steps):
         return '{}{}'.format(self.result_name, steps)
     
+    def _get_values(self, X):
+        return X[self.values_col]
+    
+    def _get_window(self, window_size):
+        if not self.drop_last:
+            return window_size
+        return FixedLastDropedWindowIndexer(window_size=window_size, drop_last=self.drop_last)
+
+    def _get_objective(self, roll):
+        pass
+    
     def transform(self, X):
-        values = X[self.values_col]
         results = [X]
-        
+
         for s in self.steps:
-            result = {'index': [], 'data': [], 'name': self._get_result_name(s)}
-            start = 0 if self.run_incomplete else (s - 1)
-            
-            for i in range(start, len(X)):
-                subset = values[max(0, (i + 1 - s)):(i + 1 - self.drop_last)]
-                res_i = self._get_objective(subset)
-                
-                if res_i is not None:
-                    result['index'].append(i)
-                    result['data'].append(res_i)
-            results.append(pd.Series(**result, dtype='object'))
+            values = self._get_values(X).copy()
+            window = self._get_window(s)
+            roll = values.rolling(window=window, min_periods=0)
+            result = self._get_objective(roll)
+            result.name = self._get_result_name(s)
+            results.append(result)
+        
         X = pd.concat(results, axis=1)
         return X
 
@@ -260,21 +305,16 @@ class HighersLowersBaseTransform(MovingWindowBaseTransform):
 
     def __init__(self, steps, values_col, suffix, radius=2):
         result_name = '{}{}_'.format(self.FUNC, suffix)
-        super().__init__(steps, values_col, result_name, drop_last=radius, run_incomplete=False)
+        self.monotonic ='is_monotonic' if self.FUNC == 'higher' else 'is_monotonic_decreasing'
+        super().__init__(steps, values_col, result_name, drop_last=radius)
     
-    def _sorted(self, values):
-        for i in range(1, len(values)):
-            if self.FUNC == 'higher':
-                if values[i] < values[i - 1]:
-                    return False
-            else:
-                if values[i] > values[i - 1]:
-                    return False
-        return True
+    def _get_objective_item(self, subset):
+        non_empty = subset.dropna()
+        is_sorted = getattr(non_empty, self.monotonic)
+        return len(non_empty) if is_sorted else 0
     
-    def _get_objective(self, subset):
-        subset = subset.dropna().tolist()
-        return len(subset) if self._sorted(subset) else None
+    def _get_objective(self, roll):
+        return roll.apply(self._get_objective_item)
 
 
 class HighersTransform(HighersLowersBaseTransform):
@@ -293,12 +333,11 @@ class MinMaxBaseTransform(MovingWindowBaseTransform):
     FUNC = None
     
     def __init__(self, steps, values_col, suffix, radius=2):
-        result_name = '{}{}'.format(self.FUNC, suffix)
-        super().__init__(steps, values_col, result_name, drop_last=radius, run_incomplete=False)
-
-    def _get_objective(self, subset):
-        val = getattr(subset, self.FUNC)()
-        return val if val else None
+        result_name = '{}_{}'.format(self.FUNC, suffix)
+        super().__init__(steps, values_col, result_name, drop_last=radius)
+    
+    def _get_objective(self, roll):
+        return getattr(roll, self.FUNC)()
 
 
 class MinWindowTransform(MinMaxBaseTransform):
@@ -318,22 +357,26 @@ class CountCondTransform(MovingWindowBaseTransform):
     def __init__(self, steps, values_col, result_name, value, cond='eq', drop_last=0):
         self.value = value
         self.cond = cond
-        super().__init__(steps, values_col, result_name, drop_last=drop_last, run_incomplete=False)
+        super().__init__(steps, values_col, result_name, drop_last=drop_last)
 
-    def _get_objective(self, subset):
+    def _get_values(self, X):
+        ds = X[self.values_col]
         if self.cond == 'eq':
-            count = (subset == self.value).sum()
+            cond = (ds == self.value)
         elif self.cond == 'gt':
-            count = (subset > self.value).sum()
+            cond = (ds > self.value)
         elif self.cond == 'lt':
-            count = (subset < self.value).sum()
+            cond = (ds < self.value)
         elif self.cond == 'gte':
-            count = (subset >= self.value).sum()
+            cond = (ds >= self.value)
         elif self.cond == 'lte':
-            count = (subset <= self.value).sum()
+            cond = (ds <= self.value)
         elif self.cond == 'neq':
-            count = (subset != self.value).sum()
-        return count
+            cond = (ds != self.value)
+        return cond
+    
+    def _get_objective(self, roll):
+        return roll.sum()
 
 
 class CountCondCrossTransform(MovingWindowBaseTransform):
@@ -350,42 +393,27 @@ class SupportResistanceBounceBaseTransform(BaseCandlestickTransform):
     '''
     TYPE = None
 
-    def __init__(self, base_col, radius=2, bounce_strength=1):
+    def __init__(self, base_col, radius=2):
         self.base_col = base_col
         self.radius = radius
-        self.bounce_strength = bounce_strength
         self.result_name = '{}{}_{}'.format('sup' if self.TYPE == 'support' else 'res', radius, base_col)
-    
+
     def transform(self, X):
-        i = self.radius
-        indexes = []
-        values = []
-        closes = X[self.CLOSE]
-        extremes = X[self.HIGH] if self.TYPE == 'resistance' else X[self.LOW]
-        base = X[self.base_col]
+        extreme = X[self.HIGH] if self.TYPE == 'resistance' else X[self.LOW]
+        extreme_diff = extreme - X[self.base_col]
+        close_diff = X[self.CLOSE] - X[self.base_col]
+        left_shift = close_diff.shift(self.radius, fill_value=0)
+        right_shift = close_diff.shift(-self.radius, fill_value=0)
         
-        while i < len(X) - self.radius:
-            m, c_l, c_r = extremes.iloc[i], closes.iloc[i - self.radius], closes.iloc[i + self.radius]
-            b_m, b_l, b_r = base.iloc[i], base.iloc[i - self.radius], base.iloc[i + self.radius]
-            sup = ((self.TYPE == 'support') and (m < b_m) and (c_l > b_l) and (c_r > b_r))
-            res = ((self.TYPE != 'support') and (m > b_m) and (c_l < b_l) and (c_r < b_r))
-            # dist_cond = (
-            #     (self.bounce_strength * abs(m - b_m) < abs(c_l - b_l)) and
-            #     (self.bounce_strength * abs(m - b_m) < abs(c_r - b_r))
-            # )
-            dist_cond = True
-            local_end = m == getattr(
-                extremes.iloc[(i - self.radius):(i + self.radius + 1)],
-                'min' if self.TYPE == 'support' else 'max'
-            )()
-            if (sup or res) and dist_cond and local_end:
-                indexes.append(i)
-                values.append(b_m)
-                i += self.radius + 1
-            else:
-                i += 1
+        roll = extreme.rolling(window=self.radius, min_periods=0, center=True)
+        local_extreme = (roll.min() == extreme) if self.TYPE == 'support' else (roll.max() == extreme)
         
-        X[self.result_name] = pd.Series(values, index=indexes)
+        if self.TYPE == 'support':
+            bounce_cond = (left_shift > 0) & (right_shift > 0) & (extreme_diff < 0) & local_extreme
+        else:
+            bounce_cond = (left_shift < 0) & (right_shift < 0) & (extreme_diff > 0) & local_extreme
+        
+        X.loc[bounce_cond, self.result_name] = X[self.base_col]
         return X
 
 
@@ -398,13 +426,16 @@ class ResistanceBounceTransform(SupportResistanceBounceBaseTransform):
 
 
 class RowRelativeTransform(BaseCandlestickTransform):
-    def __init__(self, target_cols, ref_col=None):
+    def __init__(self, target_cols, ref_col=None, variation=True):
         self.target_cols = target_cols
         self.ref_col = ref_col if ref_col else self.CLOSE
+        self.variation = variation
     
     def transform(self, X):
         ref_factors = 100 / X[self.ref_col]
-        X[self.target_cols] = (X[self.target_cols].multiply(ref_factors, axis="index")) - 100
+        X[self.target_cols] = (X[self.target_cols].multiply(ref_factors, axis="index"))
+        if self.variation:
+            X[self.target_cols] -= 100
         return X
 
 
@@ -419,7 +450,8 @@ class FilterFeatures(BaseTransform):
         self.features = features
     
     def transform(self, X):
-        return pd.DataFrame({f: X.get(f, pd.Series(index=X.index, name=f)) for f in self.features})
+        data = {f: X.get(f, pd.Series(index=X.index, name=f, dtype=object)) for f in self.features}
+        return pd.DataFrame(data)
 
 
 class DropFeatures(BaseTransform):
@@ -447,7 +479,11 @@ class DropFeatures(BaseTransform):
         return self
 
     def transform(self, X):
-        X.drop(self.drop, axis=1, inplace=True)
+        if hasattr(self, 'drop'):
+            drop = self.drop
+        else:
+            drop = self.features
+        X.drop(drop, axis=1, inplace=True)
         return X
 
 
@@ -512,3 +548,57 @@ class MultiFeaturesImputer(BaseTransform):
             X = imputer.transform(X)
         return X
 
+
+class ToFloatTransform(BaseTransform):
+    def __init__(self, columns='all'):
+        self.columns = columns
+
+    def transform(self, X):
+        if self.columns == 'all':
+            return X.astype('float')
+        for col in self.columns:
+            X[col] = X[col].astype('float')
+        return X
+
+
+class RegisterFeatures(BaseTransform):
+    def __init__(self, to_numpy=False):
+        self.to_numpy = to_numpy
+        self.features = None
+
+    def fit(self, X, y=None):
+        self.features = X.columns.values.tolist()
+        return self
+    
+    def transform(self, X):
+        if self.to_numpy:
+            return X.values
+        return X
+
+
+class RiseTargetTransform(MovingWindowBaseTransform):
+    def __init__(self, steps, above, not_below, result_name):
+        self.above = above
+        self.not_below = not_below
+        super().__init__(steps, self.CLOSE, result_name, drop_last=0)
+    
+    def _get_window(self, window_size):
+        return FixedForwardWindowIndexer(window_size=window_size)
+    
+    def _get_objective_item(self, subset):
+        above_cond = True
+        not_below_cond = True
+        
+        current_ratio = 100 / subset.iloc[0]
+        max_var = (subset.max() * current_ratio) - 100
+        min_var = (subset.min() * current_ratio) - 100
+        
+        if self.above is not None:
+            above_cond = max_var > self.above
+        if self.not_below is not None:
+            not_below_cond = min_var > self.not_below
+        
+        return int(above_cond and not_below_cond)
+    
+    def _get_objective(self, roll):
+        return roll.apply(self._get_objective_item)

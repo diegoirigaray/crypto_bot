@@ -9,7 +9,7 @@ from pathlib import Path
 import urllib.request
 
 
-YEARS = ['2017', '2018', '2019', '2020', '2021']
+YEARS = ['2017', '2018', '2019', '2020', '2021', '2022']
 INTERVALS = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1mo"]
 DAILY_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
 TRADING_TYPE = ["spot", "um", "cm"]
@@ -82,9 +82,9 @@ def convert_to_date_object(d):
   return date_obj
 
 def get_path(trading_type, market_data_type, time_period, symbol, interval=None):
-  trading_type_path = '/spot'
+  trading_type_path = 'data/spot'
   if trading_type != 'spot':
-    trading_type_path = f'/futures/{trading_type}'
+    trading_type_path = f'data/futures/{trading_type}'
   if interval is not None:
     path = f'{trading_type_path}/{time_period}/{market_data_type}/{symbol.upper()}/{interval}/'
   else:
@@ -145,7 +145,12 @@ def load_dataframe(folder, start_date, end_date, type='spot', symbol='BTCUSDT', 
   rr = rrule(MONTHLY, dtstart=start, until=end)
   for p in rr:
     file_name = '{}-{}-{}-{:02d}.zip'.format(symbol, interval, p.year, p.month)
-    data.append(pd.read_csv(path + file_name, names=cols))
+    try:
+        data.append(pd.read_csv(path + file_name, names=cols))
+    except FileNotFoundError:
+        print('File "{}" not found'.format(file_name))
+    except Exception:
+        print('Ouch!')
   
   data = pd.concat(data, ignore_index=True)
   data['Date'] = pd.to_datetime(data['Date'], unit='ms')

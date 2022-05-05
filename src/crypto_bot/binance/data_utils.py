@@ -9,7 +9,7 @@ from pathlib import Path
 import urllib.request
 
 
-YEARS = ['2017', '2018', '2019', '2020', '2021']
+YEARS = ['2017', '2018', '2019', '2020', '2021', '2022']
 INTERVALS = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1mo"]
 DAILY_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d"]
 TRADING_TYPE = ["spot", "um", "cm"]
@@ -145,7 +145,12 @@ def load_dataframe(folder, start_date, end_date, type='spot', symbol='BTCUSDT', 
   rr = rrule(MONTHLY, dtstart=start, until=end)
   for p in rr:
     file_name = '{}-{}-{}-{:02d}.zip'.format(symbol, interval, p.year, p.month)
-    data.append(pd.read_csv(path + file_name, names=cols))
+    try:
+        data.append(pd.read_csv(path + file_name, names=cols))
+    except FileNotFoundError:
+        print('File "{}" not found'.format(file_name))
+    except Exception:
+        print('Ouch!')
   
   data = pd.concat(data, ignore_index=True)
   data['Date'] = pd.to_datetime(data['Date'], unit='ms')

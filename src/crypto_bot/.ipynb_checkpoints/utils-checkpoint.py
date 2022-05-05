@@ -1,5 +1,7 @@
 import os
 import pickle
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, roc_auc_score
 
 
 def save_obj(filename, obj):
@@ -15,3 +17,15 @@ def load_obj(filename):
     obj = pickle.load(infile)
     infile.close()
     return obj
+
+
+def plot_roc(info={}):
+    for name, data in info.items():
+        target, pred = data
+        t_fpr, t_tpr, _ = roc_curve(target, pred)
+        t_auc = roc_auc_score(target, pred)
+        plt.plot(t_fpr, t_tpr, label='ROC {} (area = {:3f})'.format(name, t_auc))
+
+    plt.legend(loc=4)
+    plt.show()
+    return

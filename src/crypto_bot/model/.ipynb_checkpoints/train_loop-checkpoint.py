@@ -23,6 +23,7 @@ class Trainer():
 
     def setup_device(self):
         self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        # self.device = torch.device('cuda:0' if False else 'cpu')
         print('Using device: {}'.format(self.device))
         
         self.model.to(self.device)

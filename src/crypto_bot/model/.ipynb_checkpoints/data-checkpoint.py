@@ -217,3 +217,76 @@ class MulticlassTradeDataset(BaseTradingDataset):
             return torch.tensor([0, 1, 0])
             
         return torch.tensor([0, 0, 1])
+
+
+class NNTradingDataset(Dataset):
+    def __init__(self, df, target_col, transform=None, window_size=25, stride=1):
+        self.df = df
+        self.target_col = target_col
+        self.transform = transform
+        self.window_size = window_size
+        self.stride = stride
+        
+        self._precomputed_data = None
+        self._precomputed_target = None
+    
+    def __len__(self):
+        return (len(self.df) - self.window_size + 1) // self.stride
+    
+    def _get_data(self, idx, raw=False):
+        start = idx * self.stride
+        end = start + self.window_size
+        data = self.df[start:end].copy().drop(self.target_col, axis=1)
+        if not raw:
+            if self.transform is not None:
+                data = self.transform.transform(data)
+            data = torch.tensor(data.values).transpose(0, 1)
+        return data
+    
+    def _get_target(self, idx, raw=False):
+        pos = (idx * self.stride) + self.window_size - 1
+        target = self.df.iloc[pos][self.target_col].astype(int)
+        if not raw:
+            target = torch.tensor(target)
+        return target
+    
+    def precompute_data(self):
+        data = []
+        for i in range(len(self)):
+            data.append(self._get_data(i))
+        self._precomputed_data = torch.stack(data)
+    
+    def precompute_target(self):
+        # target = torch.tensor(self.df[self.target_col].astype(int).values)
+        # self._precomputed_target = target
+        target = []
+        for i in range(len(self)):
+            target.append(self._get_target(i))
+        self._precomputed_target = torch.stack(target)
+
+    def precompute(self):
+        self.precompute_data()
+        self.precompute_target()
+    
+    def to(self, device):
+        if self._precomputed_data is not None:
+            self._precomputed_data = self._precomputed_data.to(device)
+        if self._precomputed_target is not None:
+            self._precomputed_target = self._precomputed_target.to(device)
+    
+    def __getitem__(self, idx):
+        if idx >= len(self):
+            raise StopIteration
+        
+        if self._precomputed_data is not None:
+            data = self._precomputed_data[idx]
+        else:
+            data = self._get_data(idx)
+        
+        if self._precomputed_target is not None:
+            target = self._precomputed_target[idx]
+        else:
+            target = self._get_target(idx)
+
+        # data = torch.tensor(data.values).transpose(0, 1)
+        return data, target
